@@ -3,10 +3,11 @@ from rest_framework.routers import DefaultRouter
 
 from analytics.views import AdminStatsView
 from comments.views import CommentViewSet
-from media_posts.views import PhotoViewSet
+from media_posts.views import PhotoViewSet, VideoViewSet
 
 router = DefaultRouter()
 router.register(r"photos", PhotoViewSet, basename="photo")
+router.register(r"videos", VideoViewSet, basename="video")
 router.register(r"comments", CommentViewSet, basename="comment")
 
 urlpatterns = [

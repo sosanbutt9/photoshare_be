@@ -1,11 +1,12 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from .models import Photo, PhotoMedia
+from .models import Photo, PhotoMedia, Video, VideoMedia
 
 User = get_user_model()
 
 MAX_IMAGES_PER_POST = 10
+MAX_VIDEOS_PER_POST = 10
 
 
 class PhotoCreatorSerializer(serializers.ModelSerializer):
@@ -111,3 +112,106 @@ class PhotoWriteSerializer(serializers.ModelSerializer):
 
 class PhotoRateSerializer(serializers.Serializer):
     score = serializers.IntegerField(min_value=1, max_value=5)
+
+
+class VideoListSerializer(serializers.ModelSerializer):
+    creator = PhotoCreatorSerializer(read_only=True)
+    media_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Video
+        fields = (
+            "id",
+            "creator",
+            "title",
+            "caption",
+            "video",
+            "media_count",
+            "location",
+            "people_present",
+            "view_count",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+    def get_media_count(self, obj):
+        base = 1 if obj.video else 0
+        return base + len(obj.media_items.all())
+
+
+class VideoDetailSerializer(VideoListSerializer):
+    media = serializers.SerializerMethodField()
+
+    class Meta(VideoListSerializer.Meta):
+        fields = VideoListSerializer.Meta.fields + ("media",)
+
+    def get_media(self, obj):
+        request = self.context.get("request")
+        urls = []
+        if obj.video:
+            urls.append(_absolute_media_url(request, obj.video.url))
+        for m in obj.media_items.all():
+            urls.append(_absolute_media_url(request, m.file.url))
+        return urls
+
+
+class VideoWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Video
+        fields = ("title", "caption", "video", "location", "people_present")
+        extra_kwargs = {"video": {"required": False}}
+
+    def validate(self, attrs):
+        request = self.context["request"]
+        files = request.FILES.getlist("videos")
+        if not files:
+            single = request.FILES.get("video")
+            if single:
+                files = [single]
+
+        if self.instance is None:
+            if not files:
+                raise serializers.ValidationError(
+                    {"videos": ["Select at least one video."]},
+                )
+            if len(files) > MAX_VIDEOS_PER_POST:
+                raise serializers.ValidationError(
+                    {"videos": [f"You can upload at most {MAX_VIDEOS_PER_POST} videos per post."]},
+                )
+            attrs["_upload_files"] = files
+            return attrs
+
+        if files and len(files) > MAX_VIDEOS_PER_POST:
+            raise serializers.ValidationError(
+                {"videos": [f"You can upload at most {MAX_VIDEOS_PER_POST} videos per update."]},
+            )
+        attrs["_upload_files"] = files
+        return attrs
+
+    def create(self, validated_data):
+        files = validated_data.pop("_upload_files")
+        validated_data["video"] = files[0]
+        validated_data["creator"] = self.context["request"].user
+        video_post = Video.objects.create(**validated_data)
+        for order, f in enumerate(files[1:], start=1):
+            if hasattr(f, "seek"):
+                f.seek(0)
+            VideoMedia.objects.create(video_post=video_post, file=f, sort_order=order)
+        return video_post
+
+    def update(self, instance, validated_data):
+        files = validated_data.pop("_upload_files", [])
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if files:
+            instance.video = files[0]
+        instance.save()
+
+        if files and len(files) > 1:
+            VideoMedia.objects.filter(video_post=instance).delete()
+            for order, f in enumerate(files[1:], start=1):
+                if hasattr(f, "seek"):
+                    f.seek(0)
+                VideoMedia.objects.create(video_post=instance, file=f, sort_order=order)
+        return instance

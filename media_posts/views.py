@@ -13,15 +13,18 @@ from common.permissions import IsCreatorOwnerOrAdmin, IsCreatorUser
 from ratings.serializers import RatingSerializer
 from ratings.services import set_photo_rating
 
-from .filters import PhotoFilter
-from .models import Photo
+from .filters import PhotoFilter, VideoFilter
+from .models import Photo, Video
 from .serializers import (
     PhotoDetailSerializer,
     PhotoListSerializer,
     PhotoRateSerializer,
     PhotoWriteSerializer,
+    VideoDetailSerializer,
+    VideoListSerializer,
+    VideoWriteSerializer,
 )
-from .services import increment_photo_view_count
+from .services import increment_photo_view_count, increment_video_view_count
 
 
 class PhotoViewSet(viewsets.ModelViewSet):
@@ -184,3 +187,97 @@ class PhotoViewSet(viewsets.ModelViewSet):
             paginated.data["success"] = True
             return paginated
         return Response({"success": True, "results": ser.data})
+
+
+class VideoViewSet(viewsets.ModelViewSet):
+    queryset = Video.objects.select_related("creator").all().prefetch_related("media_items")
+    pagination_class = StandardResultsPagination
+    filter_backends = (
+        DjangoFilterBackend,
+        QueryParamSearchFilter,
+        OrderingFilter,
+    )
+    filterset_class = VideoFilter
+    search_fields = (
+        "title",
+        "caption",
+        "location",
+        "people_present",
+        "creator__username",
+        "creator__full_name",
+    )
+    ordering_fields = ("created_at", "updated_at", "view_count", "title")
+    ordering = ("-created_at",)
+    lookup_value_regex = r"[0-9]+"
+
+    def get_serializer_class(self):
+        if self.action in ("create", "update", "partial_update"):
+            return VideoWriteSerializer
+        if self.action == "retrieve":
+            return VideoDetailSerializer
+        return VideoListSerializer
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "search"):
+            return [permissions.AllowAny()]
+        if self.action == "create":
+            return [permissions.IsAuthenticated(), IsCreatorUser()]
+        if self.action in ("update", "partial_update", "destroy"):
+            return [permissions.IsAuthenticated(), IsCreatorOwnerOrAdmin()]
+        return [permissions.IsAuthenticated()]
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        increment_video_view_count(instance)
+        serializer = self.get_serializer(instance)
+        return Response({"success": True, "video": serializer.data})
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        if isinstance(response.data, dict) and "results" in response.data:
+            return Response(
+                {
+                    "success": True,
+                    "count": response.data.get("count"),
+                    "next": response.data.get("next"),
+                    "previous": response.data.get("previous"),
+                    "results": response.data["results"],
+                }
+            )
+        return Response({"success": True, "results": response.data})
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        out = VideoDetailSerializer(
+            self.get_queryset().get(pk=serializer.instance.pk),
+            context={"request": request},
+        )
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            {"success": True, "video": out.data},
+            status=status.HTTP_201_CREATED,
+            headers=headers,
+        )
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        out = VideoDetailSerializer(
+            self.get_queryset().get(pk=instance.pk),
+            context={"request": request},
+        )
+        return Response({"success": True, "video": out.data})
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response({"success": True, "detail": "Video deleted."}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request, *args, **kwargs):
+        return self.list(request, *args, **kwargs)

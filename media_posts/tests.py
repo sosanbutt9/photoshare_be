@@ -8,8 +8,8 @@ from PIL import Image
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from media_posts.models import Photo, PhotoMedia
-from media_posts.serializers import PhotoWriteSerializer
+from media_posts.models import Photo, PhotoMedia, Video, VideoMedia
+from media_posts.serializers import PhotoWriteSerializer, VideoWriteSerializer
 
 User = get_user_model()
 
@@ -19,6 +19,11 @@ def _small_jpeg_bytes():
     Image.new("RGB", (20, 20), color=(120, 40, 200)).save(buf, format="JPEG")
     buf.seek(0)
     return buf.read()
+
+
+def _small_video_bytes():
+    # Minimal bytes for upload tests; backend accepts file uploads via FileField.
+    return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 
 
 class CreatorPhotoUploadTests(TestCase):
@@ -172,3 +177,72 @@ class ConsumerRatingTests(TestCase):
         self.assertEqual(again.status_code, status.HTTP_200_OK)
         self.assertFalse(again.data["created"])
         self.assertEqual(again.data["rating"]["score"], 3)
+
+
+class CreatorVideoUploadTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.creator = User.objects.create_user(
+            email="video_creator@example.com",
+            username="video_creator1",
+            password="creatorpass2",
+            role=User.Role.CREATOR,
+        )
+        access = self.client.post(
+            "/api/auth/login/",
+            {"email": self.creator.email, "password": "creatorpass2"},
+            format="json",
+        ).data["access"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+
+    def test_creator_can_upload_multiple_videos(self):
+        clip1 = SimpleUploadedFile("a.mp4", _small_video_bytes(), content_type="video/mp4")
+        clip2 = SimpleUploadedFile("b.mp4", _small_video_bytes(), content_type="video/mp4")
+        response = self.client.post(
+            "/api/videos/",
+            {
+                "title": "My clips",
+                "caption": "Batch upload",
+                "videos": [clip1, clip2],
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["video"]["title"], "My clips")
+        video_post = Video.objects.get(pk=response.data["video"]["id"])
+        self.assertTrue(video_post.video.name)
+        self.assertEqual(VideoMedia.objects.filter(video_post=video_post).count(), 1)
+
+    def test_creator_can_update_video_post(self):
+        video_post = Video.objects.create(
+            creator=self.creator,
+            title="Old title",
+            caption="",
+            video=SimpleUploadedFile("old.mp4", _small_video_bytes(), content_type="video/mp4"),
+        )
+        response = self.client.patch(
+            f"/api/videos/{video_post.pk}/",
+            {"title": "New title", "caption": "Updated"},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["success"])
+        self.assertEqual(response.data["video"]["title"], "New title")
+
+    def test_serializer_supports_repeated_videos_getlist(self):
+        clip1 = SimpleUploadedFile("1.mp4", _small_video_bytes(), content_type="video/mp4")
+        clip2 = SimpleUploadedFile("2.mp4", _small_video_bytes(), content_type="video/mp4")
+        factory = RequestFactory()
+        django_request = factory.post("/api/videos/")
+        django_request.user = self.creator
+        django_request.FILES = MultiValueDict()
+        django_request.FILES.setlist("videos", [clip1, clip2])
+
+        ser = VideoWriteSerializer(
+            data={"title": "Batch", "caption": "Two clips"},
+            context={"request": django_request},
+        )
+        self.assertTrue(ser.is_valid(), ser.errors)
+        video_post = ser.save()
+        self.assertEqual(VideoMedia.objects.filter(video_post=video_post).count(), 1)
