@@ -5,10 +5,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from common.pagination import StandardResultsPagination
+
 from .models import User, UserFollow
 from .serializers import (
     ConsumerRegisterSerializer,
     EmailTokenObtainPairSerializer,
+    FollowListUserSerializer,
     PublicProfileSerializer,
     UserProfileUpdateSerializer,
     UserSerializer,
@@ -76,6 +79,52 @@ class UserPublicProfileView(APIView):
                 "user": PublicProfileSerializer(profile_user, context={"request": request}).data,
             }
         )
+
+
+class UserFollowersListView(APIView):
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsPagination
+
+    def get(self, request, user_id):
+        get_object_or_404(User.objects.all(), pk=user_id)
+        qs = (
+            UserFollow.objects.filter(following_id=user_id)
+            .select_related("follower")
+            .order_by("-created_at")
+        )
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        rows = page if page is not None else list(qs)
+        users = [row.follower for row in rows]
+        ser = FollowListUserSerializer(users, many=True, context={"request": request})
+        if page is not None:
+            resp = paginator.get_paginated_response(ser.data)
+            resp.data["success"] = True
+            return resp
+        return Response({"success": True, "results": ser.data})
+
+
+class UserFollowingListView(APIView):
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardResultsPagination
+
+    def get(self, request, user_id):
+        get_object_or_404(User.objects.all(), pk=user_id)
+        qs = (
+            UserFollow.objects.filter(follower_id=user_id)
+            .select_related("following")
+            .order_by("-created_at")
+        )
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        rows = page if page is not None else list(qs)
+        users = [row.following for row in rows]
+        ser = FollowListUserSerializer(users, many=True, context={"request": request})
+        if page is not None:
+            resp = paginator.get_paginated_response(ser.data)
+            resp.data["success"] = True
+            return resp
+        return Response({"success": True, "results": ser.data})
 
 
 class FollowUserView(APIView):

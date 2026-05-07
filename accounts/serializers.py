@@ -16,6 +16,20 @@ def _absolute_avatar_url(request, user):
     return user.avatar.url
 
 
+class FollowListUserSerializer(serializers.ModelSerializer):
+    """Minimal user row for followers / following lists."""
+
+    avatar = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ("id", "username", "full_name", "avatar")
+        read_only_fields = fields
+
+    def get_avatar(self, obj):
+        return _absolute_avatar_url(self.context.get("request"), obj)
+
+
 class UserSerializer(serializers.ModelSerializer):
     avatar = serializers.SerializerMethodField()
     followers_count = serializers.SerializerMethodField()

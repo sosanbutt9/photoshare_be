@@ -99,22 +99,32 @@ class PhotoWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         request = self.context["request"]
-        if self.instance is not None:
-            return attrs
         files = request.FILES.getlist("images")
         if not files:
             single = request.FILES.get("image")
             if single:
                 files = [single]
-        if not files:
-            raise serializers.ValidationError(
-                {"images": ["Select at least one image."]},
-            )
-        if len(files) > MAX_IMAGES_PER_POST:
-            raise serializers.ValidationError(
-                {"images": [f"You can upload at most {MAX_IMAGES_PER_POST} images per post."]},
-            )
-        attrs["_upload_files"] = files
+
+        if self.instance is None:
+            if not files:
+                raise serializers.ValidationError(
+                    {"images": ["Select at least one image."]},
+                )
+            if len(files) > MAX_IMAGES_PER_POST:
+                raise serializers.ValidationError(
+                    {"images": [f"You can upload at most {MAX_IMAGES_PER_POST} images per post."]},
+                )
+            attrs["_upload_files"] = files
+            return attrs
+
+        if files:
+            if len(files) > MAX_IMAGES_PER_POST:
+                raise serializers.ValidationError(
+                    {"images": [f"You can upload at most {MAX_IMAGES_PER_POST} images per update."]},
+                )
+            attrs["_upload_files"] = files
+        else:
+            attrs["_upload_files"] = []
         return attrs
 
     def create(self, validated_data):
@@ -127,6 +137,22 @@ class PhotoWriteSerializer(serializers.ModelSerializer):
                 f.seek(0)
             PhotoMedia.objects.create(photo=photo, image=f, sort_order=order)
         return photo
+
+    def update(self, instance, validated_data):
+        files = validated_data.pop("_upload_files", [])
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if files:
+            instance.image = files[0]
+            instance.save()
+            PhotoMedia.objects.filter(photo=instance).delete()
+            for order, f in enumerate(files[1:], start=1):
+                if hasattr(f, "seek"):
+                    f.seek(0)
+                PhotoMedia.objects.create(photo=instance, image=f, sort_order=order)
+        else:
+            instance.save()
+        return instance
 
 
 class PhotoRateSerializer(serializers.Serializer):
@@ -238,12 +264,12 @@ class VideoWriteSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         if files:
             instance.video = files[0]
-        instance.save()
-
-        if files and len(files) > 1:
+            instance.save()
             VideoMedia.objects.filter(video_post=instance).delete()
             for order, f in enumerate(files[1:], start=1):
                 if hasattr(f, "seek"):
                     f.seek(0)
                 VideoMedia.objects.create(video_post=instance, file=f, sort_order=order)
+        else:
+            instance.save()
         return instance
