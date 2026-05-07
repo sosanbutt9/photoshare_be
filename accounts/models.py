@@ -56,6 +56,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_superuser = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
+    avatar = models.ImageField(upload_to="avatars/%Y/%m/", blank=True, null=True)
 
     objects = UserManager()
 
@@ -69,3 +70,34 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return self.email
+
+
+class UserFollow(models.Model):
+    """``follower`` subscribes to updates from ``following``."""
+
+    follower = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="following_relations",
+        db_index=True,
+    )
+    following = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="follower_relations",
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["follower", "following"], name="unique_follow_pair"),
+            models.CheckConstraint(
+                check=~models.Q(follower=models.F("following")),
+                name="follow_not_self",
+            ),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.follower_id} → {self.following_id}"

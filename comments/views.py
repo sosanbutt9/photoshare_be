@@ -8,7 +8,7 @@ from .serializers import CommentSerializer
 
 
 class CommentViewSet(mixins.DestroyModelMixin, viewsets.GenericViewSet):
-    queryset = Comment.objects.select_related("author", "photo").all()
+    queryset = Comment.objects.select_related("author", "photo", "video").all()
     serializer_class = CommentSerializer
     permission_classes = [permissions.IsAuthenticated, IsOwnerOrAdmin]
     lookup_value_regex = r"[0-9]+"

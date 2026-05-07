@@ -10,10 +10,20 @@ MAX_VIDEOS_PER_POST = 10
 
 
 class PhotoCreatorSerializer(serializers.ModelSerializer):
+    avatar = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ("id", "username", "full_name", "email")
+        fields = ("id", "username", "full_name", "email", "avatar")
         read_only_fields = fields
+
+    def get_avatar(self, obj):
+        if not getattr(obj, "avatar", None):
+            return ""
+        request = self.context.get("request")
+        if request:
+            return request.build_absolute_uri(obj.avatar.url)
+        return obj.avatar.url
 
 
 def _absolute_media_url(request, relative_url):
@@ -28,6 +38,8 @@ class PhotoListSerializer(serializers.ModelSerializer):
     creator = PhotoCreatorSerializer(read_only=True)
     average_rating = serializers.FloatField(read_only=True, allow_null=True)
     ratings_count = serializers.IntegerField(read_only=True)
+    likes_count = serializers.IntegerField(read_only=True)
+    liked_by_me = serializers.SerializerMethodField()
     media_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -44,10 +56,17 @@ class PhotoListSerializer(serializers.ModelSerializer):
             "view_count",
             "average_rating",
             "ratings_count",
+            "likes_count",
+            "liked_by_me",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_liked_by_me(self, obj):
+        if hasattr(obj, "liked_by_me"):
+            return bool(obj.liked_by_me)
+        return False
 
     def get_media_count(self, obj):
         base = 1 if obj.image else 0
@@ -116,6 +135,10 @@ class PhotoRateSerializer(serializers.Serializer):
 
 class VideoListSerializer(serializers.ModelSerializer):
     creator = PhotoCreatorSerializer(read_only=True)
+    average_rating = serializers.FloatField(read_only=True, allow_null=True)
+    ratings_count = serializers.IntegerField(read_only=True)
+    likes_count = serializers.IntegerField(read_only=True)
+    liked_by_me = serializers.SerializerMethodField()
     media_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -130,10 +153,19 @@ class VideoListSerializer(serializers.ModelSerializer):
             "location",
             "people_present",
             "view_count",
+            "average_rating",
+            "ratings_count",
+            "likes_count",
+            "liked_by_me",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_liked_by_me(self, obj):
+        if hasattr(obj, "liked_by_me"):
+            return bool(obj.liked_by_me)
+        return False
 
     def get_media_count(self, obj):
         base = 1 if obj.video else 0

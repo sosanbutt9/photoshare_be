@@ -1,4 +1,4 @@
-from django.db.models import Avg, Count
+from django.db.models import Avg, Count, Exists, OuterRef
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -11,10 +11,10 @@ from common.pagination import StandardResultsPagination
 from common.permissions import IsCreatorOwnerOrAdmin, IsCreatorUser
 
 from ratings.serializers import RatingSerializer
-from ratings.services import set_photo_rating
+from ratings.services import set_photo_rating, set_video_rating
 
 from .filters import PhotoFilter, VideoFilter
-from .models import Photo, Video
+from .models import MediaLike, Photo, Video
 from .serializers import (
     PhotoDetailSerializer,
     PhotoListSerializer,
@@ -24,7 +24,12 @@ from .serializers import (
     VideoListSerializer,
     VideoWriteSerializer,
 )
-from .services import increment_photo_view_count, increment_video_view_count
+from .services import (
+    increment_photo_view_count,
+    increment_video_view_count,
+    toggle_photo_like,
+    toggle_video_like,
+)
 
 
 class PhotoViewSet(viewsets.ModelViewSet):
@@ -50,10 +55,19 @@ class PhotoViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        return qs.annotate(
+        qs = qs.annotate(
             average_rating=Avg("ratings__score"),
             ratings_count=Count("ratings", distinct=True),
-        ).prefetch_related("media_items")
+            likes_count=Count("likes", distinct=True),
+        )
+        user = self.request.user
+        if user.is_authenticated:
+            qs = qs.annotate(
+                liked_by_me=Exists(
+                    MediaLike.objects.filter(photo_id=OuterRef("pk"), user_id=user.pk)
+                )
+            )
+        return qs.prefetch_related("media_items")
 
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
@@ -71,7 +85,7 @@ class PhotoViewSet(viewsets.ModelViewSet):
             return [permissions.AllowAny()]
         if self.action in ("ratings",):
             return [permissions.AllowAny()]
-        if self.action in ("rate",):
+        if self.action in ("rate", "like"):
             return [permissions.IsAuthenticated()]
         if self.action == "create":
             return [permissions.IsAuthenticated(), IsCreatorUser()]
@@ -141,7 +155,11 @@ class PhotoViewSet(viewsets.ModelViewSet):
         if request.method == "GET":
             qs = photo.comments.select_related("author").all()
             page = self.paginate_queryset(qs)
-            ser = CommentSerializer(page if page is not None else qs, many=True)
+            ser = CommentSerializer(
+                page if page is not None else qs,
+                many=True,
+                context={"request": request},
+            )
             if page is not None:
                 paginated = self.get_paginated_response(ser.data)
                 paginated.data["success"] = True
@@ -154,7 +172,10 @@ class PhotoViewSet(viewsets.ModelViewSet):
         ser_in.is_valid(raise_exception=True)
         comment = ser_in.save()
         return Response(
-            {"success": True, "comment": CommentSerializer(comment).data},
+            {
+                "success": True,
+                "comment": CommentSerializer(comment, context={"request": request}).data,
+            },
             status=status.HTTP_201_CREATED,
         )
 
@@ -188,6 +209,12 @@ class PhotoViewSet(viewsets.ModelViewSet):
             return paginated
         return Response({"success": True, "results": ser.data})
 
+    @action(detail=True, methods=["post"], url_path="like")
+    def like(self, request, pk=None):
+        photo = self.get_object()
+        liked, likes_count = toggle_photo_like(user=request.user, photo=photo)
+        return Response({"success": True, "liked": liked, "likes_count": likes_count})
+
 
 class VideoViewSet(viewsets.ModelViewSet):
     queryset = Video.objects.select_related("creator").all().prefetch_related("media_items")
@@ -210,6 +237,22 @@ class VideoViewSet(viewsets.ModelViewSet):
     ordering = ("-created_at",)
     lookup_value_regex = r"[0-9]+"
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qs = qs.annotate(
+            average_rating=Avg("ratings__score"),
+            ratings_count=Count("ratings", distinct=True),
+            likes_count=Count("likes", distinct=True),
+        )
+        user = self.request.user
+        if user.is_authenticated:
+            qs = qs.annotate(
+                liked_by_me=Exists(
+                    MediaLike.objects.filter(video_id=OuterRef("pk"), user_id=user.pk)
+                )
+            )
+        return qs.prefetch_related("media_items")
+
     def get_serializer_class(self):
         if self.action in ("create", "update", "partial_update"):
             return VideoWriteSerializer
@@ -220,6 +263,14 @@ class VideoViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in ("list", "retrieve", "search"):
             return [permissions.AllowAny()]
+        if self.action == "comments":
+            if self.request.method == "POST":
+                return [permissions.IsAuthenticated()]
+            return [permissions.AllowAny()]
+        if self.action in ("ratings",):
+            return [permissions.AllowAny()]
+        if self.action in ("rate", "like"):
+            return [permissions.IsAuthenticated()]
         if self.action == "create":
             return [permissions.IsAuthenticated(), IsCreatorUser()]
         if self.action in ("update", "partial_update", "destroy"):
@@ -281,3 +332,69 @@ class VideoViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="search")
     def search(self, request, *args, **kwargs):
         return self.list(request, *args, **kwargs)
+
+    @action(detail=True, methods=["get", "post"], url_path="comments")
+    def comments(self, request, pk=None):
+        video_post = self.get_object()
+        if request.method == "GET":
+            qs = video_post.comments.select_related("author").all()
+            page = self.paginate_queryset(qs)
+            ser = CommentSerializer(
+                page if page is not None else qs,
+                many=True,
+                context={"request": request},
+            )
+            if page is not None:
+                paginated = self.get_paginated_response(ser.data)
+                paginated.data["success"] = True
+                return paginated
+            return Response({"success": True, "results": ser.data})
+        ser_in = CommentCreateSerializer(
+            data=request.data,
+            context={"request": request, "video": video_post},
+        )
+        ser_in.is_valid(raise_exception=True)
+        comment = ser_in.save()
+        return Response(
+            {
+                "success": True,
+                "comment": CommentSerializer(comment, context={"request": request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["post"], url_path="rate")
+    def rate(self, request, pk=None):
+        video_post = self.get_object()
+        ser = PhotoRateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        score = ser.validated_data["score"]
+        rating, created = set_video_rating(user=request.user, video=video_post, score=score)
+        body = RatingSerializer(rating).data
+        code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "rating": body,
+            },
+            status=code,
+        )
+
+    @action(detail=True, methods=["get"], url_path="ratings")
+    def ratings(self, request, pk=None):
+        video_post = self.get_object()
+        qs = video_post.ratings.select_related("user").all()
+        page = self.paginate_queryset(qs)
+        ser = RatingSerializer(page if page is not None else qs, many=True)
+        if page is not None:
+            paginated = self.get_paginated_response(ser.data)
+            paginated.data["success"] = True
+            return paginated
+        return Response({"success": True, "results": ser.data})
+
+    @action(detail=True, methods=["post"], url_path="like")
+    def like(self, request, pk=None):
+        video_post = self.get_object()
+        liked, likes_count = toggle_video_like(user=request.user, video_post=video_post)
+        return Response({"success": True, "liked": liked, "likes_count": likes_count})
